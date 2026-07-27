@@ -762,6 +762,49 @@ def test_e2e_duet_session_lifecycle():
     assert calls.count(("GET", "/rr_connect")) == 1, calls
 
 
+# --------------------------------------------------------------- knowledge
+
+
+def test_fdm_docs_ship_and_are_readable():
+    # guards the path: the docs live under .claude/skills/, so a move that
+    # keeps the skill working for Claude Code could still break MCP clients.
+    for topic in ("guide", "materials", "troubleshooting"):
+        text = server.fdm_printing(topic)
+        assert len(text) > 500, (topic, len(text))
+        assert text.lstrip().startswith("#"), (topic, text[:40])
+        # frontmatter is Claude Code trigger metadata, not client content
+        assert "name: fdm-printing" not in text, topic
+
+
+def test_fdm_strip_frontmatter():
+    assert server._strip_frontmatter("---\nname: x\n---\n# Body\n") == "# Body\n"
+    assert server._strip_frontmatter("# No frontmatter\n") == "# No frontmatter\n"
+    # an unterminated block is left alone rather than eating the document
+    assert server._strip_frontmatter("---\ndangling\n") == "---\ndangling\n"
+
+
+def test_fdm_all_concatenates_every_doc():
+    combined = server.fdm_printing("all")
+    for topic in ("guide", "materials", "troubleshooting"):
+        assert server.fdm_printing(topic) in combined, topic
+
+
+def test_fdm_unknown_topic_refused():
+    for bad in ("../../etc/passwd", "SKILL.md", ""):
+        try:
+            server.fdm_printing(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"topic {bad!r} was not refused")
+        try:
+            server.fdm_doc(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"doc {bad!r} was not refused")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

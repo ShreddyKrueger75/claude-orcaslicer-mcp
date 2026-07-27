@@ -5,6 +5,10 @@ Tools: preset listing/reading/editing, headless slicing via the OrcaSlicer CLI
 open-project state, and network printer control (status, webcam snapshot,
 upload, start/pause/resume/stop) for any supported printer — see backends.py.
 
+Prompts/resources: the FDM printing knowledge base (rig limits, per-filament
+settings, calibration order, failure diagnosis) ships with the server, so a
+client gets the expertise to use these tools well, not just the tools.
+
 Configuration (env vars, all optional):
   ORCA_SLICER_BIN   path to the OrcaSlicer executable
   ORCA_SLICER_DATA  path to OrcaSlicer's config dir (system/user presets)
@@ -867,6 +871,67 @@ async def watch_print(until: str = "change", timeout_s: float = 60,
                     "filename": latest["print"].get("filename")}
     finally:
         await b.close()
+
+
+# --------------------------------------------------------------- knowledge
+
+# The FDM guidance lives once on disk with two consumers: Claude Code loads it
+# as a project skill, and these handlers serve it to any MCP client — so an
+# install that only adds the server still gets the expertise, not bare tools.
+KNOWLEDGE = Path(__file__).parent / ".claude" / "skills" / "fdm-printing"
+DOCS = {"guide": "SKILL.md",
+        "materials": "references/materials.md",
+        "troubleshooting": "references/troubleshooting.md"}
+
+
+def _strip_frontmatter(text: str) -> str:
+    # SKILL.md carries Claude Code trigger metadata; MCP clients don't need it.
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[end + 5:].lstrip("\n")
+    return text
+
+
+def _read_doc(name: str) -> str:
+    path = KNOWLEDGE / DOCS[name]
+    try:
+        return _strip_frontmatter(path.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise ValueError(
+            f"FDM knowledge doc {name!r} is unreadable ({path}): {e}. These ship "
+            "in the repo — install from a full clone, not a bare module copy."
+        ) from e
+
+
+def _check_topic(name: str, allowed: str) -> None:
+    if name not in DOCS:
+        raise ValueError(f"unknown {allowed} {name!r}; choose from "
+                         f"{', '.join(DOCS)}")
+
+
+@mcp.prompt()
+def fdm_printing(topic: str = "guide") -> str:
+    """Expert FDM printing guidance, tuned to this printer's real limits.
+
+    Load this before advising on prints: it covers the machine's flow/speed
+    ceilings, per-filament temps and drying, calibration order, symptom-driven
+    failure diagnosis, and design-for-FDM rules.
+
+    topic: "guide" (rig limits, calibration, design), "materials" (per-filament
+    settings), "troubleshooting" (symptom -> fix), or "all".
+    """
+    if topic == "all":
+        return "\n\n---\n\n".join(_read_doc(d) for d in DOCS)
+    _check_topic(topic, "topic")
+    return _read_doc(topic)
+
+
+@mcp.resource("fdm://{doc}")
+def fdm_doc(doc: str) -> str:
+    """An FDM knowledge doc: guide | materials | troubleshooting."""
+    _check_topic(doc, "doc")
+    return _read_doc(doc)
 
 
 if __name__ == "__main__":

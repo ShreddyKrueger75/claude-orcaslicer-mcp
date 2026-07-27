@@ -47,6 +47,28 @@ You:  Keep an eye on it.
 | `print_control` | Pause / resume / stop |
 | `watch_print` | Wait (bounded) for a state change / target state / error and report progress — follow a long job without polling by hand |
 
+## Knowledge, not just tools
+
+Tools let an assistant *drive* a printer; they don't tell it that PLA in an
+enclosed chamber heat-creeps into a clog, or that stringy PETG is a wet spool
+before it's a retraction setting. So the printing knowledge ships with the
+server:
+
+| Prompt | Argument |
+|---|---|
+| `fdm_printing` | `topic` — `guide` (rig limits, calibration order, design-for-FDM), `materials` (per-filament temps, cooling, drying), `troubleshooting` (symptom → cause → cheapest fix), or `all` |
+
+The same docs are exposed as resources at `fdm://guide`, `fdm://materials`,
+and `fdm://troubleshooting`.
+
+They're written against a specific machine (Elegoo Centauri Carbon) — the
+numbers are that printer's real flow and speed ceilings, not generic advice.
+Swap the files in `.claude/skills/fdm-printing/` for your own machine's and
+both the prompts and the resources follow. Claude Code users get the same
+content automatically as a project skill; it's one copy on disk with two
+consumers. Note the docs are read from the repo checkout, so the documented
+editable install is what makes them available.
+
 ## Printer support
 
 Slicing works for every printer OrcaSlicer supports. Printer *control* speaks

@@ -762,6 +762,38 @@ def test_e2e_duet_session_lifecycle():
     assert calls.count(("GET", "/rr_connect")) == 1, calls
 
 
+# ---------------------------------------------------------------- http
+
+
+def test_http_transport_requires_bearer_token():
+    import os
+    from starlette.testclient import TestClient
+    os.environ.pop("MCP_TOKEN", None)
+    try:
+        server._http_app()
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("HTTP app built without MCP_TOKEN")
+    os.environ["MCP_TOKEN"] = "correct-horse-battery-staple"
+    os.environ["MCP_ALLOWED_HOSTS"] = "orca.example.com"
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-03-26", "capabilities": {},
+        "clientInfo": {"name": "t", "version": "0"}}}
+    hdrs = {"Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json"}
+    with TestClient(server._http_app()) as c:
+        assert c.post("/mcp", json=init, headers=hdrs).status_code == 401
+        assert c.post("/mcp", json=init, headers={**hdrs, "Authorization": "Bearer wrong"}).status_code == 401
+        ok = {**hdrs, "Authorization": "Bearer correct-horse-battery-staple"}
+        # localhost and the tunnel hostname admitted; an unlisted Host is a
+        # DNS-rebinding attempt (the SDK guard, kept on)
+        assert c.post("/mcp", json=init, headers={**ok, "Host": "localhost:8000"}).status_code == 200
+        assert c.post("/mcp", json=init, headers={**ok, "Host": "orca.example.com"}).status_code == 200
+        assert c.post("/mcp", json=init, headers={**ok, "Host": "evil.example.com"}).status_code == 421
+    del os.environ["MCP_TOKEN"], os.environ["MCP_ALLOWED_HOSTS"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

@@ -95,6 +95,38 @@ uv venv --python 3.11 && uv pip install -e .
 claude mcp add orcaslicer -- "$(pwd)/.venv/bin/python" "$(pwd)/server.py"
 ```
 
+### Other clients: Codex CLI, ChatGPT, anything that speaks MCP
+
+The server is plain MCP; nothing in it is Claude-specific. Codex CLI runs it
+as a local process exactly like Claude Code does:
+
+```bash
+codex mcp add orcaslicer -- "$(pwd)/.venv/bin/python" "$(pwd)/server.py"
+```
+
+ChatGPT (custom connectors) can't spawn a local process — it needs a URL.
+Set `MCP_TRANSPORT=http` to serve Streamable HTTP instead of stdio, gated by a
+shared bearer token, then put a tunnel in front of it:
+
+```bash
+export MCP_TOKEN="$(openssl rand -hex 24)"   # keep this; the client sends it
+MCP_TRANSPORT=http MCP_ALLOWED_HOSTS=orca.example.com .venv/bin/python server.py
+cloudflared tunnel --url http://localhost:8000   # or ngrok; note the hostname
+```
+
+Then add `https://orca.example.com/mcp` as the connector URL with
+`Authorization: Bearer <MCP_TOKEN>`. Codex can use the same URL
+(`url = "…/mcp"` + `bearer_token_env_var = "MCP_TOKEN"` in `~/.codex/config.toml`)
+if you'd rather not install Python on that machine.
+
+Read the *Safety model* below before doing this: over HTTP the server is an
+internet-reachable printer controller. It refuses to start without a token,
+binds to `127.0.0.1` (tunnel only) unless `MCP_HOST` says otherwise, and keeps
+the SDK's DNS-rebinding guard on — a request whose `Host` isn't localhost or in
+`MCP_ALLOWED_HOSTS` gets a 421. If your ChatGPT connector UI offers only
+OAuth or "no auth", put an identity-aware proxy (Cloudflare Access) in front
+rather than turning the token off.
+
 Configuration is optional — sensible defaults are detected per platform:
 
 | Env var | Default |
@@ -107,6 +139,8 @@ Configuration is optional — sensible defaults are detected per platform:
 | `PRINTER_SNAPSHOT_URL` | OctoPrint webcam URL (default `http://<host>:8080/?action=snapshot`) |
 | `ORCASLICER_MCP_CONFIG` | `~/.config/orcaslicer-mcp/printer.json` (written 0600) |
 | `DEFAULT_BED_TYPE` | `Textured PEI Plate` |
+| `MCP_TRANSPORT` | `stdio`; `http` serves Streamable HTTP at `/mcp` (needs `MCP_TOKEN`) |
+| `MCP_TOKEN`, `MCP_HOST`, `MCP_PORT`, `MCP_ALLOWED_HOSTS` | HTTP mode only: bearer token (≥16 chars), bind address (`127.0.0.1:8000`), extra `Host` values to admit (your tunnel hostname) |
 
 ## Safety model
 

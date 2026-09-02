@@ -15,6 +15,9 @@ Configuration (env vars, all optional):
   PRINTER_SERIAL / PRINTER_ACCESS_CODE / PRINTER_SNAPSHOT_URL
                     per-protocol connection details (see printer_setup)
   ORCASLICER_MCP_CONFIG  path to the saved printer config JSON
+  MCP_TRANSPORT     "http" serves Streamable HTTP (ChatGPT/Codex over a URL)
+                    instead of stdio; requires MCP_TOKEN. MCP_HOST / MCP_PORT
+                    (127.0.0.1:8000) and MCP_ALLOWED_HOSTS (tunnel hostnames).
 
 With no printer env vars set, the server reads the printer's address and
 protocol straight from your OrcaSlicer machine preset (print_host/host_type),
@@ -869,5 +872,41 @@ async def watch_print(until: str = "change", timeout_s: float = 60,
         await b.close()
 
 
+def _http_app():
+    """Streamable-HTTP app for clients that can't spawn a local process
+    (ChatGPT connectors, Codex/Claude over a URL). Gated by a shared bearer
+    token — this server heats hardware and starts prints, never expose it
+    bare. MCP_ALLOWED_HOSTS lists the public hostname(s) a tunnel presents
+    (comma-separated) so the SDK's DNS-rebinding guard admits them."""
+    import hmac
+
+    from mcp.server.transport_security import TransportSecuritySettings
+    from starlette.responses import PlainTextResponse
+
+    token = os.environ.get("MCP_TOKEN")
+    if not token or len(token) < 16:
+        raise SystemExit("MCP_TOKEN (>=16 chars) must be set to serve over HTTP")
+    hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    hosts += [h for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h]
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True, allowed_hosts=hosts)
+    inner = mcp.streamable_http_app()
+    expected = f"Bearer {token}".encode()
+
+    async def app(scope, receive, send):
+        if scope["type"] == "http":
+            got = dict(scope["headers"]).get(b"authorization", b"")
+            if not hmac.compare_digest(got, expected):
+                await PlainTextResponse("unauthorized", 401)(scope, receive, send)
+                return
+        await inner(scope, receive, send)
+    return app
+
+
 if __name__ == "__main__":
-    mcp.run()
+    if os.environ.get("MCP_TRANSPORT") == "http":
+        import uvicorn
+        uvicorn.run(_http_app(), host=os.environ.get("MCP_HOST", "127.0.0.1"),
+                    port=int(os.environ.get("MCP_PORT", "8000")))
+    else:
+        mcp.run()

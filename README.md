@@ -104,6 +104,28 @@ as a local process exactly like Claude Code does:
 codex mcp add orcaslicer -- "$(pwd)/.venv/bin/python" "$(pwd)/server.py"
 ```
 
+Two settings in `~/.codex/config.toml` are worth adding, because Codex's
+defaults don't suit a tool that runs a slicer and heats a nozzle:
+
+```toml
+[mcp_servers.orcaslicer]
+command = "/abs/path/.venv/bin/python"
+args = ["/abs/path/server.py"]
+# slicing a real model outruns the 60s default and gets killed mid-run
+tool_timeout_sec = 600
+# every tool declares whether it only reads; "writes" waves through status,
+# presets and snapshots, and stops for anything that slices, uploads, edits
+# a preset, or moves the printer
+default_tools_approval_mode = "writes"
+```
+
+That second line only works because the tools are annotated — `printer_status`
+and `get_profile` are marked read-only, while `start_print`, `print_control`
+and `update_profile` are marked destructive. The server also returns MCP
+`instructions`, which Codex reads at connect time as server-wide guidance; it
+leads with the two rules the tools can't enforce alone (confirm before
+`start_print`, never infer `plate_cleared`).
+
 ChatGPT (custom connectors) can't spawn a local process — it needs a URL.
 Set `MCP_TRANSPORT=http` to serve Streamable HTTP instead of stdio, gated by a
 shared bearer token, then put a tunnel in front of it:

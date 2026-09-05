@@ -15,6 +15,9 @@ Configuration (env vars, all optional):
   PRINTER_SERIAL / PRINTER_ACCESS_CODE / PRINTER_SNAPSHOT_URL
                     per-protocol connection details (see printer_setup)
   ORCASLICER_MCP_CONFIG  path to the saved printer config JSON
+  MCP_TRANSPORT     "http" serves Streamable HTTP (ChatGPT/Codex over a URL)
+                    instead of stdio; requires MCP_TOKEN. MCP_HOST / MCP_PORT
+                    (127.0.0.1:8000) and MCP_ALLOWED_HOSTS (tunnel hostnames).
 
 With no printer env vars set, the server reads the printer's address and
 protocol straight from your OrcaSlicer machine preset (print_host/host_type),
@@ -32,6 +35,7 @@ import time
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP, Image
+from mcp.types import ToolAnnotations
 
 import backends
 from backends import NotConfigured, Target, Unsupported
@@ -54,7 +58,21 @@ VALID_BED_TYPES = ("Default Plate", "Cool Plate", "Textured Cool Plate",
                    "Textured PEI Plate")
 KINDS = ("machine", "process", "filament")
 
-mcp = FastMCP("orcaslicer")
+INSTRUCTIONS = """Slices models with the OrcaSlicer CLI and drives a real 3D printer on the user's network: read and edit slicer presets, slice, upload, start, monitor.
+
+Two rules the tools cannot enforce alone. start_print heats a nozzle past 200C and can begin a job lasting days, so confirm with the user before calling it, and never infer plate_cleared -- it means a person looked at the build plate and said it was empty. Never guess a printer type or host; the wrong protocol sends wrong temperatures to real hardware. Ask.
+
+When a printer tool reports no configuration, call printer_setup first: it reports what is configured, what the user's OrcaSlicer presets point at, and what answers on the network. Prefer the project open in the GUI (gui_project_state) over guessed slicing settings.
+
+slice_model can run for minutes on a large model and watch_print blocks until its timeout, so raise your client's per-tool timeout above 60s if it has one."""
+
+mcp = FastMCP("orcaslicer", instructions=INSTRUCTIONS)
+
+# Codex's `writes` approval mode prompts for any tool not marked read-only,
+# so these decide what gets waved through and what stops for a human.
+READS = ToolAnnotations(readOnlyHint=True)
+WRITES = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
 # ---------------------------------------------------------------- profiles
 
@@ -106,7 +124,7 @@ def _system_ancestor(name: str, idx: dict[str, Path]) -> str:
     return cur
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 def list_profiles(kind: str | None = None, search: str | None = None) -> dict:
     """List OrcaSlicer presets. kind: machine | process | filament | None (all).
     search: optional case-insensitive substring filter on the name.
@@ -126,7 +144,7 @@ def list_profiles(kind: str | None = None, search: str | None = None) -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 def get_profile(name: str, kind: str, resolved: bool = True) -> dict:
     """Read a preset. resolved=True merges the full inheritance chain so you
     see the effective settings; resolved=False shows only the preset's own
@@ -139,7 +157,7 @@ def get_profile(name: str, kind: str, resolved: bool = True) -> dict:
     return json.loads(idx[name].read_text())
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 def update_profile(name: str, kind: str, settings: dict) -> str:
     """Set values on a USER preset (system presets are read-only — copy them in
     the OrcaSlicer GUI first). Only pass the keys you want to change.
@@ -206,7 +224,7 @@ def _gui_project() -> dict | None:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 def gui_project_state() -> dict:
     """What's open in the OrcaSlicer GUI right now: source file plus the
     printer/process/filament presets and key setting overrides the user chose.
@@ -298,7 +316,7 @@ def _int_list(value: str, param: str) -> str:
     return ",".join(parts)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITES)
 def slice_model(
     model_path: str,
     printer: str | None = None,
@@ -425,7 +443,7 @@ def slice_model(
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 def analyze_gcode(gcode_path: str) -> dict:
     """Parse an Orca-sliced G-code file: print time, filament use, layer count,
     the actual commanded temperatures (M109/M190), bed type, and profile names."""
@@ -526,7 +544,7 @@ async def _backend(host: str | None = None) -> backends.Backend:
     return backends.make(_resolve_target(host))
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 async def printer_setup(host: str | None = None) -> dict:
     """Find out which printer we can talk to, and what's still needed.
 
@@ -604,7 +622,7 @@ async def printer_setup(host: str | None = None) -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITES)
 async def configure_printer(printer_type: str, host: str,
                             api_key: str | None = None,
                             user: str | None = None,
@@ -649,7 +667,7 @@ async def configure_printer(printer_type: str, host: str,
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 async def printer_status(host: str | None = None) -> dict:
     """Live printer status: normalized state (idle/heating/printing/paused/
     complete/stopped/error/busy), temps, layer progress. Works with any
@@ -662,7 +680,7 @@ async def printer_status(host: str | None = None) -> dict:
         await b.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 async def printer_snapshot(host: str | None = None) -> Image:
     """Grab a still from the printer's camera — use it to check first-layer
     adhesion and mid-print health remotely. Not every printer has one."""
@@ -675,7 +693,7 @@ async def printer_snapshot(host: str | None = None) -> Image:
     return Image(data=img, format=fmt)
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 async def printer_attributes(host: str | None = None) -> dict:
     """Printer identity and firmware info — useful when debugging protocol
     quirks or confirming the server is talking to the right machine."""
@@ -686,7 +704,7 @@ async def printer_attributes(host: str | None = None) -> dict:
         await b.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 async def printer_files(host: str | None = None) -> dict:
     """List G-code files stored on the printer. Some firmwares don't allow it
     (notably the Elegoo Centauri Carbon CC1)."""
@@ -699,7 +717,7 @@ async def printer_files(host: str | None = None) -> dict:
         await b.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=WRITES)
 async def upload_gcode(gcode_path: str, host: str | None = None,
                        remote_name: str | None = None) -> str:
     """Upload a G-code file to the printer. Does NOT start printing —
@@ -720,7 +738,7 @@ async def upload_gcode(gcode_path: str, host: str | None = None,
 _start_lock = None  # created lazily; module import happens outside a loop
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 async def start_print(filename: str, host: str | None = None,
                       plate_cleared: bool = False) -> dict:
     """Start printing a file already on the printer (see upload_gcode).
@@ -783,7 +801,7 @@ async def start_print(filename: str, host: str | None = None,
             await b.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=DESTRUCTIVE)
 async def print_control(action: str, host: str | None = None) -> dict:
     """Pause, resume, or stop the current print. action: pause|resume|stop.
     resume only acts on a paused print — never on a stopped or errored job,
@@ -807,7 +825,7 @@ async def print_control(action: str, host: str | None = None) -> dict:
         await b.close()
 
 
-@mcp.tool()
+@mcp.tool(annotations=READS)
 async def watch_print(until: str = "change", timeout_s: float = 60,
                       host: str | None = None) -> dict:
     """Watch a running print and return once something worth knowing happens —
@@ -869,5 +887,41 @@ async def watch_print(until: str = "change", timeout_s: float = 60,
         await b.close()
 
 
+def _http_app():
+    """Streamable-HTTP app for clients that can't spawn a local process
+    (ChatGPT connectors, Codex/Claude over a URL). Gated by a shared bearer
+    token — this server heats hardware and starts prints, never expose it
+    bare. MCP_ALLOWED_HOSTS lists the public hostname(s) a tunnel presents
+    (comma-separated) so the SDK's DNS-rebinding guard admits them."""
+    import hmac
+
+    from mcp.server.transport_security import TransportSecuritySettings
+    from starlette.responses import PlainTextResponse
+
+    token = os.environ.get("MCP_TOKEN")
+    if not token or len(token) < 16:
+        raise SystemExit("MCP_TOKEN (>=16 chars) must be set to serve over HTTP")
+    hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    hosts += [h for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h]
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True, allowed_hosts=hosts)
+    inner = mcp.streamable_http_app()
+    expected = f"Bearer {token}".encode()
+
+    async def app(scope, receive, send):
+        if scope["type"] == "http":
+            got = dict(scope["headers"]).get(b"authorization", b"")
+            if not hmac.compare_digest(got, expected):
+                await PlainTextResponse("unauthorized", 401)(scope, receive, send)
+                return
+        await inner(scope, receive, send)
+    return app
+
+
 if __name__ == "__main__":
-    mcp.run()
+    if os.environ.get("MCP_TRANSPORT") == "http":
+        import uvicorn
+        uvicorn.run(_http_app(), host=os.environ.get("MCP_HOST", "127.0.0.1"),
+                    port=int(os.environ.get("MCP_PORT", "8000")))
+    else:
+        mcp.run()

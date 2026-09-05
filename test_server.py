@@ -762,6 +762,73 @@ def test_e2e_duet_session_lifecycle():
     assert calls.count(("GET", "/rr_connect")) == 1, calls
 
 
+# ---------------------------------------------------------------- http
+
+
+def test_http_transport_requires_bearer_token():
+    import os
+    from starlette.testclient import TestClient
+    os.environ.pop("MCP_TOKEN", None)
+    try:
+        server._http_app()
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("HTTP app built without MCP_TOKEN")
+    os.environ["MCP_TOKEN"] = "correct-horse-battery-staple"
+    os.environ["MCP_ALLOWED_HOSTS"] = "orca.example.com"
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-03-26", "capabilities": {},
+        "clientInfo": {"name": "t", "version": "0"}}}
+    hdrs = {"Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json"}
+    with TestClient(server._http_app()) as c:
+        assert c.post("/mcp", json=init, headers=hdrs).status_code == 401
+        assert c.post("/mcp", json=init, headers={**hdrs, "Authorization": "Bearer wrong"}).status_code == 401
+        ok = {**hdrs, "Authorization": "Bearer correct-horse-battery-staple"}
+        # localhost and the tunnel hostname admitted; an unlisted Host is a
+        # DNS-rebinding attempt (the SDK guard, kept on)
+        assert c.post("/mcp", json=init, headers={**ok, "Host": "localhost:8000"}).status_code == 200
+        assert c.post("/mcp", json=init, headers={**ok, "Host": "orca.example.com"}).status_code == 200
+        assert c.post("/mcp", json=init, headers={**ok, "Host": "evil.example.com"}).status_code == 421
+    del os.environ["MCP_TOKEN"], os.environ["MCP_ALLOWED_HOSTS"]
+
+
+# ------------------------------------------------------------ client interop
+
+
+# Tools that reach hardware, the network, or disk. Codex's `writes` approval
+# mode waves through anything marked read-only, so a mistake here means a
+# client silently auto-approves heating a nozzle.
+_NOT_READ_ONLY = {"update_profile", "slice_model", "configure_printer",
+                  "upload_gcode", "start_print", "print_control"}
+
+
+def test_every_tool_is_classified():
+    tools = asyncio.run(server.mcp.list_tools())
+    assert len(tools) == 16, f"tool count changed: {len(tools)}"
+    for t in tools:
+        assert t.annotations is not None, f"{t.name} has no annotations"
+        read_only = bool(t.annotations.readOnlyHint)
+        assert read_only == (t.name not in _NOT_READ_ONLY), (
+            f"{t.name} readOnlyHint={read_only}; a side-effecting tool marked "
+            "read-only gets auto-approved by clients")
+
+
+def test_hardware_tools_flagged_destructive():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    for name in ("start_print", "print_control", "update_profile"):
+        assert tools[name].annotations.destructiveHint, name
+
+
+def test_instructions_lead_with_safety():
+    # Codex reads `instructions` at initialize and asks that the first 512
+    # chars stand alone, so the safety rules must survive that truncation.
+    head = (server.mcp.instructions or "")[:512]
+    assert "start_print" in head and "plate_cleared" in head, head
+    assert head.rstrip().endswith("."), "512-char cut lands mid-sentence"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in tests:

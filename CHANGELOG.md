@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- **Works with Codex CLI and ChatGPT.** `MCP_TRANSPORT=http` serves Streamable HTTP at `/mcp` for clients that need a URL; stdio (Claude Code, Claude Desktop, Codex CLI local) is unchanged. HTTP mode refuses to start without `MCP_TOKEN` (bearer, ≥16 chars, compared constant-time), binds to `127.0.0.1` by default, and keeps the SDK's DNS-rebinding guard on with `MCP_ALLOWED_HOSTS` for the tunnel hostname. README: Codex and ChatGPT setup.
+- Tests: 42 → 43.
+
 ## 0.4.0 — 2026-07-16
 - **Print monitoring:** new `watch_print` tool — a bounded poll (≤300s) that returns on a state change, a target state, or an error, with the progress moved during the wait. Follow a multi-day job without hand-writing status loops. Backend-agnostic; no backend changes.
 - **Slicing depth:** `slice_model` gains `filaments` (multi-material list), `filament_ids` (object→slot map, "1,2,1"), `plate` (slice one plate), and `skip_objects` ("3,5"). The singular `filament` parameter still works, and `presets_used` keeps a `filament` key for single-material prints alongside the new `filaments` list. `filament_ids` is bounds-checked against the number of filaments. Reuses the existing preset-inheritance resolver per filament. AMS slot mapping deferred.
